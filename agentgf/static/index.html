@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentGF — Budget</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11,11,11,0.10);
+  --wash: rgba(11,11,11,0.04);
+  --s-income: #2a78d6;
+  --s-expense: #eb6834;
+  --track: #cde2fb;
+  --accent: #2a78d6;
+  --good: #0ca30c;
+  --warning: #fab219;
+  --critical: #d03b3b;
+  --good-ink: #006300;
+  --bad-ink: #b02a2a;
+  --user-bubble: #e8f1fc;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
+    --s-income: #3987e5; --s-expense: #d95926; --track: #184f95; --accent: #3987e5;
+    --good-ink: #0ca30c; --bad-ink: #e66767; --user-bubble: #1c2e45;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
+  --s-income: #3987e5; --s-expense: #d95926; --track: #184f95; --accent: #3987e5;
+  --good-ink: #0ca30c; --bad-ink: #e66767; --user-bubble: #1c2e45;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--ink);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+header {
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+  padding: 14px 24px; border-bottom: 1px solid var(--border); background: var(--surface);
+}
+header h1 { font-size: 18px; margin: 0; font-weight: 650; }
+header h1 span { color: var(--muted); font-weight: 400; }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+input, select, button, textarea {
+  font: inherit; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+}
+button { cursor: pointer; }
+button:hover { background: var(--wash); }
+button.primary { background: var(--accent); color: #fff; border-color: transparent; }
+button.primary:hover { filter: brightness(1.08); }
+button:disabled { opacity: .5; cursor: default; }
+.layout {
+  display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 20px;
+  padding: 20px 24px; max-width: 1440px; margin: 0 auto;
+}
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px;
+}
+.card h2 { font-size: 14px; font-weight: 600; margin: 0 0 12px; color: var(--ink-2); }
+.dash { display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); align-content: start; }
+.span-2 { grid-column: span 2; }
+.hero-row { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-end; }
+.hero .label, .tile .label { color: var(--ink-2); font-size: 13px; }
+.hero .value { font-size: 48px; font-weight: 650; line-height: 1.1; letter-spacing: -0.01em; }
+.tile .value { font-size: 22px; font-weight: 600; }
+.tile .sub { color: var(--muted); font-size: 12px; }
+.pos { color: var(--good-ink); } .neg { color: var(--bad-ink); }
+.legend { display: flex; gap: 16px; font-size: 13px; color: var(--ink-2); margin-bottom: 6px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.chart text { fill: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.chart text.val { fill: var(--ink-2); }
+.empty { color: var(--muted); font-size: 14px; padding: 12px 0; }
+details { margin-top: 8px; font-size: 13px; }
+summary { cursor: pointer; color: var(--muted); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--grid); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.meter-row { margin-bottom: 12px; }
+.meter-head { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; margin-bottom: 4px; }
+.meter-head .name { font-weight: 550; }
+.meter-head .name::first-letter { text-transform: uppercase; }
+.scroll { overflow-x: auto; }
+.meter-head .amt { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.meter { height: 8px; border-radius: 4px; background: var(--track); overflow: hidden; }
+.meter > div { height: 100%; border-radius: 4px; }
+.status { font-size: 12px; margin-top: 3px; color: var(--ink-2); }
+.status b { font-weight: 600; }
+.notice {
+  display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  border: 1px solid var(--border); border-left: 4px solid var(--warning); border-radius: 8px;
+  padding: 10px 12px; background: var(--surface); font-size: 14px;
+}
+/* Chat */
+.chat { display: flex; flex-direction: column; height: calc(100vh - 110px); position: sticky; top: 20px; padding: 0; }
+.chat h2 { padding: 14px 18px 0; display: flex; justify-content: space-between; align-items: center; }
+.chat h2 button { font-size: 12px; padding: 3px 8px; }
+.messages { flex: 1; overflow-y: auto; padding: 8px 18px; display: flex; flex-direction: column; gap: 10px; }
+.msg { max-width: 92%; padding: 9px 12px; border-radius: 12px; font-size: 14px; overflow-wrap: anywhere; }
+.msg.user { align-self: flex-end; background: var(--user-bubble); }
+.msg.bot { align-self: flex-start; border: 1px solid var(--border); }
+.msg.bot p { margin: 0 0 6px; } .msg.bot p:last-child { margin: 0; }
+.msg.bot ul, .msg.bot ol { margin: 4px 0 6px; padding-left: 20px; }
+.msg.bot h3 { font-size: 14px; margin: 8px 0 4px; }
+.msg.err { align-self: flex-start; border: 1px solid var(--critical); color: var(--bad-ink); }
+.msg .tools { color: var(--muted); font-size: 11px; margin-top: 6px; }
+.typing { color: var(--muted); font-size: 13px; }
+.suggestions { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 18px 8px; }
+.suggestions button { font-size: 12px; padding: 4px 9px; border-radius: 999px; }
+form.composer { display: flex; gap: 8px; padding: 12px 18px 16px; border-top: 1px solid var(--border); }
+form.composer textarea { flex: 1; resize: none; height: 44px; }
+#tooltip {
+  position: fixed; pointer-events: none; z-index: 10; display: none;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 10px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.12);
+  font-variant-numeric: tabular-nums;
+}
+#tooltip .row { display: flex; gap: 8px; align-items: center; }
+#tooltip i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+@media (max-width: 1000px) {
+  .layout { grid-template-columns: minmax(0, 1fr); padding: 16px; }
+  .chat { position: static; height: 560px; }
+}
+@media (max-width: 640px) {
+  header { padding: 12px 16px; }
+  .dash { grid-template-columns: minmax(0, 1fr); }
+  .span-2 { grid-column: auto; }
+  .hero .value { font-size: 40px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>AgentGF <span>· budget &amp; épargne</span></h1>
+  <div class="filters">
+    <input type="month" id="month" aria-label="Mois">
+    <select id="account" aria-label="Compte"><option value="">Tous les comptes</option></select>
+    <button id="importBtn" type="button">Importer un CSV</button>
+    <input type="file" id="file" accept=".csv,text/csv" hidden>
+    <button id="themeBtn" type="button" aria-label="Changer de thème">◐</button>
+  </div>
+</header>
+
+<div class="layout">
+  <main class="dash">
+    <div id="notice" class="span-2" hidden></div>
+
+    <section class="card span-2">
+      <div class="hero-row">
+        <div class="hero"><div class="label">Solde du mois</div><div class="value" id="net">—</div></div>
+        <div class="tile"><div class="label">Revenus</div><div class="value" id="income">—</div></div>
+        <div class="tile"><div class="label">Dépenses</div><div class="value" id="expenses">—</div></div>
+        <div class="tile"><div class="label">Taux d'épargne</div><div class="value" id="rate">—</div><div class="sub" id="rateSub"></div></div>
+        <div class="tile"><div class="label">Total des comptes</div><div class="value" id="total">—</div></div>
+      </div>
+    </section>
+
+    <section class="card span-2">
+      <h2>Revenus et dépenses sur 6 mois</h2>
+      <div class="legend"><span><i style="background:var(--s-income)"></i>Revenus</span><span><i style="background:var(--s-expense)"></i>Dépenses</span></div>
+      <div class="chart" id="trendChart"></div>
+      <details><summary>Voir le tableau</summary><div id="trendTable"></div></details>
+    </section>
+
+    <section class="card">
+      <h2>Dépenses par catégorie</h2>
+      <div class="chart" id="catChart"></div>
+      <details><summary>Voir le tableau</summary><div id="catTable"></div></details>
+    </section>
+
+    <section class="card">
+      <h2>Budgets du mois</h2>
+      <div id="budgets"></div>
+    </section>
+
+    <section class="card">
+      <h2>Objectifs d'épargne</h2>
+      <div id="goals"></div>
+    </section>
+
+    <section class="card">
+      <h2>Comptes</h2>
+      <div id="accounts"></div>
+    </section>
+
+    <section class="card span-2">
+      <h2>Dernières transactions</h2>
+      <div id="recent"></div>
+    </section>
+  </main>
+
+  <aside class="card chat">
+    <h2>Votre assistant <button id="resetBtn" type="button">Nouvelle conversation</button></h2>
+    <div class="messages" id="messages" aria-live="polite">
+      <div class="msg bot"><p>Bonjour ! Dites-moi vos dépenses et revenus, demandez un bilan ou fixez-vous un objectif d'épargne.</p></div>
+    </div>
+    <div class="suggestions" id="suggestions">
+      <button type="button">Fais-moi le bilan du mois</button>
+      <button type="button">Où puis-je économiser ?</button>
+      <button type="button">J'ai payé 54,20 € de courses chez Carrefour</button>
+      <button type="button">Je veux épargner 3000 € d'ici un an</button>
+    </div>
+    <form class="composer" id="composer">
+      <textarea id="input" placeholder="Écrivez à l'assistant…" aria-label="Message"></textarea>
+      <button class="primary" id="send" type="submit">Envoyer</button>
+    </form>
+  </aside>
+</div>
+<div id="tooltip" role="status"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const eur = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" });
+const eur0 = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+const compact = new Intl.NumberFormat("fr-FR", { notation: "compact", maximumFractionDigits: 1 });
+const monthName = (m) => new Date(m + "-01T12:00:00").toLocaleDateString("fr-FR", { month: "short", year: "2-digit" });
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const SVG = "http://www.w3.org/2000/svg";
+const el = (tag, attrs = {}, parent) => {
+  const n = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  if (parent) parent.appendChild(n);
+  return n;
+};
+
+// --- Thème -------------------------------------------------------------------
+try { const t = localStorage.getItem("agentgf-theme"); if (t) document.documentElement.dataset.theme = t; } catch {}
+$("themeBtn").onclick = () => {
+  const dark = document.documentElement.dataset.theme
+    ? document.documentElement.dataset.theme === "dark"
+    : matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("agentgf-theme", document.documentElement.dataset.theme); } catch {}
+  if (state.data) render(state.data);
+};
+
+// --- Infobulle ----------------------------------------------------------------
+const tip = $("tooltip");
+function showTip(evt, html) {
+  tip.innerHTML = html; tip.style.display = "block";
+  const r = tip.getBoundingClientRect();
+  let x = evt.clientX + 14, y = evt.clientY + 14;
+  if (x + r.width > innerWidth - 8) x = evt.clientX - r.width - 14;
+  if (y + r.height > innerHeight - 8) y = evt.clientY - r.height - 14;
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+}
+const hideTip = () => (tip.style.display = "none");
+
+// Pas de graduation « rond » (1, 2 ou 5 × 10^n) pour environ 4 intervalles.
+function niceStep(max, ticks = 4) {
+  const raw = Math.max(max, 1) / ticks, p = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 5, 10]) if (m * p >= raw) return m * p;
+  return 10 * p;
+}
+const catLabel = (c) => (c === "a_categoriser" ? "à catégoriser" : c);
+// Barre arrondie (4px) côté valeur, carrée côté ligne de base.
+function roundedTop(x, y, w, h, r = 4) {
+  r = Math.min(r, h, w / 2);
+  return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`;
+}
+function roundedRight(x, y, w, h, r = 4) {
+  r = Math.min(r, w, h / 2);
+  return `M${x},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h - r}Q${x + w},${y + h} ${x + w - r},${y + h}H${x}Z`;
+}
+
+// --- Graphique : colonnes groupées revenus / dépenses ------------------------
+function trendChart(container, series) {
+  container.innerHTML = "";
+  if (!series.some((s) => s.income || s.expenses)) {
+    container.innerHTML = '<div class="empty">Pas encore de données sur la période.</div>'; return;
+  }
+  const W = container.clientWidth || 600, H = 220, m = { t: 18, r: 8, b: 26, l: 48 };
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img",
+    "aria-label": "Revenus et dépenses par mois" }, container);
+  const step = niceStep(Math.max(...series.flatMap((s) => [s.income, s.expenses])));
+  const nTicks = Math.ceil(Math.max(...series.flatMap((s) => [s.income, s.expenses])) / step);
+  const max = step * nTicks;
+  const y = (v) => m.t + (H - m.t - m.b) * (1 - v / max);
+  for (let i = 0; i <= nTicks; i++) {
+    const v = step * i, yy = y(v);
+    el("line", { x1: m.l, x2: W - m.r, y1: yy, y2: yy, stroke: cssVar(i ? "--grid" : "--axis"), "stroke-width": 1 }, svg);
+    el("text", { x: m.l - 8, y: yy + 4, "text-anchor": "end" }, svg).textContent = compact.format(v) + " €";
+  }
+  const band = (W - m.l - m.r) / series.length;
+  const bw = Math.min(24, (band - 16) / 2), gap = 2;
+  series.forEach((s, i) => {
+    const cx = m.l + band * i + band / 2;
+    [["income", "--s-income", "Revenus"], ["expenses", "--s-expense", "Dépenses"]].forEach(([key, color], j) => {
+      const v = s[key]; if (!v) return;
+      const x = cx + (j ? gap / 2 : -bw - gap / 2), top = y(v);
+      el("path", { d: roundedTop(x, top, bw, y(0) - top), fill: cssVar(color) }, svg);
+    });
+    // Libellé court (« mai ») quand la place manque, pour éviter les chevauchements.
+    el("text", { x: cx, y: H - 8, "text-anchor": "middle" }, svg).textContent =
+      band < 64 ? new Date(s.month + "-01T12:00:00").toLocaleDateString("fr-FR", { month: "short" }) : monthName(s.month);
+    // Zone de survol plus large que les barres.
+    const hit = el("rect", { x: cx - band / 2, y: m.t, width: band, height: H - m.t - m.b, fill: "transparent" }, svg);
+    const html = `<b>${monthName(s.month)}</b>
+      <div class="row"><i style="background:var(--s-income)"></i>Revenus ${eur.format(s.income)}</div>
+      <div class="row"><i style="background:var(--s-expense)"></i>Dépenses ${eur.format(s.expenses)}</div>
+      <div class="row">Solde <b class="${s.net >= 0 ? "pos" : "neg"}">${eur.format(s.net)}</b></div>`;
+    hit.addEventListener("mousemove", (e) => showTip(e, html));
+    hit.addEventListener("mouseleave", hideTip);
+  });
+}
+
+// --- Graphique : barres horizontales par catégorie ---------------------------
+function categoryChart(container, items) {
+  container.innerHTML = "";
+  if (!items.length) { container.innerHTML = '<div class="empty">Aucune dépense ce mois-ci.</div>'; return; }
+  let rows = items.slice(0, 7);
+  if (items.length > 7) {
+    const rest = items.slice(7);
+    rows.push({ category: "autres", total: rest.reduce((a, b) => a + b.total, 0),
+      share_percent: rest.reduce((a, b) => a + b.share_percent, 0), count: rest.reduce((a, b) => a + b.count, 0) });
+  }
+  const W = container.clientWidth || 360, rowH = 30, labelW = Math.min(120, W * 0.32), valueW = 78;
+  const H = rows.length * rowH;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": "Dépenses par catégorie" }, container);
+  const max = Math.max(...rows.map((r) => r.total));
+  const scale = (W - labelW - valueW) / max;
+  rows.forEach((r, i) => {
+    const yy = i * rowH, bh = 16, by = yy + (rowH - bh) / 2;
+    const label = el("text", { x: 0, y: by + 12 }, svg);
+    const name = catLabel(r.category);
+    label.textContent = name.length > 16 ? name.slice(0, 15) + "…" : name;
+    el("path", { d: roundedRight(labelW, by, Math.max(r.total * scale, 2), bh), fill: cssVar("--accent") }, svg);
+    el("text", { x: labelW + r.total * scale + 6, y: by + 12, class: "val" }, svg).textContent = eur0.format(r.total);
+    const hit = el("rect", { x: 0, y: yy, width: W, height: rowH, fill: "transparent" }, svg);
+    const html = `<b>${esc(catLabel(r.category))}</b><div>${eur.format(r.total)} · ${r.share_percent.toFixed(0)} % des dépenses</div><div>${r.count} transaction(s)</div>`;
+    hit.addEventListener("mousemove", (e) => showTip(e, html));
+    hit.addEventListener("mouseleave", hideTip);
+  });
+}
+
+function table(headers, rows) {
+  return `<div class="scroll"><table><thead><tr>${headers.map((h, i) => `<th class="${i ? "num" : ""}">${h}</th>`).join("")}</tr></thead>
+    <tbody>${rows.map((r) => `<tr>${r.map((c, i) => `<td class="${i ? "num" : ""}">${c}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+
+// --- Jauges ------------------------------------------------------------------
+function budgetMeters(budgets) {
+  if (!budgets.length) return '<div class="empty">Aucun budget. Demandez par ex. « fixe un budget loisirs de 150 € ».</div>';
+  return budgets.map((b) => {
+    const pct = b.percent_used ?? 0;
+    const [color, icon, label] = b.over_budget ? ["--critical", "✕", "Dépassé"]
+      : pct >= 80 ? ["--warning", "⚠", "Bientôt atteint"] : ["--good", "✓", "Dans le budget"];
+    const rest = b.remaining >= 0 ? `${eur.format(b.remaining)} restants` : `${eur.format(-b.remaining)} de dépassement`;
+    return `<div class="meter-row">
+      <div class="meter-head"><span class="name">${esc(b.category)}</span><span class="amt">${eur0.format(b.spent)} / ${eur0.format(b.limit)}</span></div>
+      <div class="meter" role="progressbar" aria-valuenow="${pct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100"><div style="width:${Math.min(pct, 100)}%;background:var(${color})"></div></div>
+      <div class="status"><span style="color:var(${color})">${icon}</span> <b>${label}</b> · ${rest}</div></div>`;
+  }).join("");
+}
+function goalMeters(goals) {
+  if (!goals.length) return '<div class="empty">Aucun objectif. Essayez « je veux épargner 3000 € pour un voyage d\'ici juin ».</div>';
+  return goals.map((g) => {
+    const extra = g.status ? g.status
+      : g.monthly_needed ? `${eur0.format(g.monthly_needed)}/mois pendant ${g.months_left} mois` : `${eur0.format(g.remaining)} restants`;
+    return `<div class="meter-row">
+      <div class="meter-head"><span class="name">${esc(g.name)}</span><span class="amt">${eur0.format(g.saved)} / ${eur0.format(g.target)}</span></div>
+      <div class="meter" role="progressbar" aria-valuenow="${g.progress_percent.toFixed(0)}" aria-valuemin="0" aria-valuemax="100"><div style="width:${g.progress_percent}%;background:var(--accent)"></div></div>
+      <div class="status"><b>${g.progress_percent.toFixed(0)} %</b> · ${esc(extra)}${g.deadline ? ` · échéance ${new Date(g.deadline).toLocaleDateString("fr-FR")}` : ""}</div></div>`;
+  }).join("");
+}
+
+// --- Rendu du tableau de bord ------------------------------------------------
+const state = { data: null };
+const TYPES = { courant: "Courant", livret: "Livret", epargne: "Épargne", especes: "Espèces", autre: "Autre" };
+
+function render(d) {
+  const s = d.summary;
+  $("net").textContent = eur.format(s.net);
+  $("net").className = "value " + (s.net >= 0 ? "pos" : "neg");
+  $("income").textContent = eur0.format(s.income);
+  $("expenses").textContent = eur0.format(s.expenses);
+  $("rate").textContent = s.savings_rate_percent == null ? "—" : `${s.savings_rate_percent.toFixed(0)} %`;
+  $("rateSub").textContent = d.trends.average_net ? `moyenne 6 mois : ${eur0.format(d.trends.average_net)}/mois` : "";
+  $("total").textContent = eur0.format(d.accounts.total_balance);
+
+  trendChart($("trendChart"), d.trends.series);
+  $("trendTable").innerHTML = table(["Mois", "Revenus", "Dépenses", "Solde"],
+    d.trends.series.map((r) => [monthName(r.month), eur.format(r.income), eur.format(r.expenses), eur.format(r.net)]));
+  categoryChart($("catChart"), s.expenses_by_category);
+  $("catTable").innerHTML = table(["Catégorie", "Montant", "Part"],
+    s.expenses_by_category.map((r) => [esc(catLabel(r.category)), eur.format(r.total), r.share_percent.toFixed(1) + " %"]));
+
+  $("budgets").innerHTML = budgetMeters(d.budgets.budgets);
+  $("goals").innerHTML = goalMeters(d.goals.goals);
+  $("accounts").innerHTML = table(["Compte", "Type", "Solde"],
+    d.accounts.accounts.map((a) => [esc(a.name), TYPES[a.type] || a.type, `<span class="${a.balance < 0 ? "neg" : ""}">${eur.format(a.balance)}</span>`]));
+  $("recent").innerHTML = d.recent.length ? table(["Libellé", "Date", "Catégorie", "Compte", "Montant"],
+    d.recent.map((t) => [esc(t.description || "—"), new Date(t.date).toLocaleDateString("fr-FR"), esc(catLabel(t.category)), esc(t.account),
+      `<span class="${t.kind === "revenu" ? "pos" : ""}">${t.kind === "revenu" ? "+" : "−"}${eur.format(t.amount)}</span>`]))
+    : '<div class="empty">Aucune transaction pour l\'instant.</div>';
+
+  const sel = $("account"), current = sel.value;
+  sel.innerHTML = '<option value="">Tous les comptes</option>' +
+    d.accounts.accounts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join("");
+  sel.value = current;
+
+  const n = $("notice");
+  if (d.uncategorized) {
+    n.hidden = false; n.className = "notice span-2";
+    n.innerHTML = `<span><b>⚠ ${d.uncategorized} transaction(s) à catégoriser.</b> L'assistant peut s'en charger.</span>`;
+    const b = document.createElement("button"); b.className = "primary"; b.textContent = "Catégoriser avec l'assistant";
+    b.onclick = () => send("Catégorise les transactions en attente et crée des règles pour les commerçants récurrents.");
+    n.appendChild(b);
+  } else n.hidden = true;
+}
+
+async function refresh() {
+  const p = new URLSearchParams();
+  if ($("month").value) p.set("month", $("month").value);
+  if ($("account").value) p.set("account", $("account").value);
+  const r = await fetch("/api/dashboard?" + p);
+  const d = await r.json();
+  if (!r.ok) { addMsg("err", d.error); return; }
+  state.data = d; render(d);
+}
+
+// --- Discussion ----------------------------------------------------------------
+function markdown(src) {
+  const inline = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`(.+?)`/g, "<code>$1</code>").replace(/(^|[^*])\*([^*]+)\*/g, "$1<i>$2</i>");
+  const out = []; let list = null; let tableRows = null;
+  const flush = () => {
+    if (list) { out.push(`<${list.tag}>${list.items.map((i) => `<li>${i}</li>`).join("")}</${list.tag}>`); list = null; }
+    if (tableRows) {
+      const rows = tableRows.filter((r) => !/^\s*\|?\s*:?-{2,}/.test(r)).map((r) => r.replace(/^\s*\||\|\s*$/g, "").split("|").map((c) => inline(c.trim())));
+      out.push(`<table><thead><tr>${rows[0].map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${rows.slice(1).map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
+      tableRows = null;
+    }
+  };
+  for (const line of src.split("\n")) {
+    let m;
+    if (/^\s*\|.*\|\s*$/.test(line)) { if (list) flush(); (tableRows ||= []).push(line); continue; }
+    if (tableRows) flush();
+    if ((m = line.match(/^\s*[-*•]\s+(.*)/))) { if (list?.tag !== "ul") { flush(); list = { tag: "ul", items: [] }; } list.items.push(inline(m[1])); }
+    else if ((m = line.match(/^\s*\d+[.)]\s+(.*)/))) { if (list?.tag !== "ol") { flush(); list = { tag: "ol", items: [] }; } list.items.push(inline(m[1])); }
+    else { flush(); if ((m = line.match(/^#{1,4}\s+(.*)/))) out.push(`<h3>${inline(m[1])}</h3>`); else if (line.trim()) out.push(`<p>${inline(line)}</p>`); }
+  }
+  flush();
+  return out.join("");
+}
+
+function addMsg(kind, text, tools) {
+  const div = document.createElement("div");
+  div.className = "msg " + kind;
+  if (kind === "bot") div.innerHTML = markdown(text);
+  else div.textContent = text;
+  if (tools?.length) {
+    const t = document.createElement("div"); t.className = "tools";
+    t.textContent = "Outils : " + [...new Set(tools)].join(", ");
+    div.appendChild(t);
+  }
+  $("messages").appendChild(div);
+  $("messages").scrollTop = $("messages").scrollHeight;
+  return div;
+}
+
+let busy = false;
+async function send(text) {
+  text = text.trim();
+  if (!text || busy) return;
+  busy = true; $("send").disabled = true; $("suggestions").hidden = true;
+  addMsg("user", text);
+  const typing = addMsg("typing", "L'assistant réfléchit…");
+  try {
+    const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: text }) });
+    const d = await r.json();
+    typing.remove();
+    if (!r.ok) addMsg("err", d.error || "Erreur inattendue");
+    else { addMsg("bot", d.reply, d.tools); if (d.tools.length) refresh(); }
+  } catch (e) {
+    typing.remove(); addMsg("err", "Serveur injoignable.");
+  } finally { busy = false; $("send").disabled = false; $("input").focus(); }
+}
+
+$("composer").onsubmit = (e) => { e.preventDefault(); const v = $("input").value; $("input").value = ""; send(v); };
+$("input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("composer").requestSubmit(); } });
+$("suggestions").addEventListener("click", (e) => { if (e.target.tagName === "BUTTON") send(e.target.textContent); });
+$("resetBtn").onclick = async () => {
+  await fetch("/api/chat/reset", { method: "POST" });
+  $("messages").innerHTML = ""; addMsg("bot", "Nouvelle conversation. Que puis-je faire pour vous ?");
+  $("suggestions").hidden = false;
+};
+
+// --- Import CSV -----------------------------------------------------------------
+$("importBtn").onclick = () => $("file").click();
+$("file").onchange = async () => {
+  const f = $("file").files[0]; if (!f) return;
+  const p = new URLSearchParams(); if ($("account").value) p.set("account", $("account").value);
+  const r = await fetch("/api/import?" + p, { method: "POST", headers: { "Content-Type": "text/csv" }, body: await f.arrayBuffer() });
+  const d = await r.json();
+  $("file").value = "";
+  if (!r.ok) { addMsg("err", d.error); return; }
+  let msg = `**Import de ${f.name}** : ${d.imported} transaction(s), dont ${d.auto_categorized} classée(s) automatiquement.`;
+  if (d.uncategorized) msg += ` ${d.uncategorized} restent à catégoriser.`;
+  if (d.errors.length) msg += `\n- ` + d.errors.join("\n- ");
+  addMsg("bot", msg);
+  refresh();
+};
+
+$("month").value = new Date().toISOString().slice(0, 7);
+$("month").onchange = refresh;
+$("account").onchange = refresh;
+let resizeTimer;
+addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => state.data && render(state.data), 150); });
+refresh();
+</script>
+</body>
+</html>

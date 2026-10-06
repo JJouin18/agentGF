@@ -99,3 +99,65 @@ def test_run_returns_json_and_schemas_are_strict(tools):
         assert schema["strict"] is True
         assert schema["input_schema"]["additionalProperties"] is False
         assert hasattr(tools, schema["name"])
+
+
+def test_accounts_and_transfers(tools):
+    tools.update_account(1, initial_balance=1000)
+    livret = tools.create_account("Livret A", "livret", 500)
+    tools.add_transaction(2000, "revenu", "salaire", date="2026-10-01")
+    tools.add_transaction(300, "depense", "alimentation", date="2026-10-02")
+    tools.transfer("compte courant", "livret a", 400, date="2026-10-03")
+    accounts = {a["name"]: a["balance"] for a in tools.list_accounts()["accounts"]}
+    assert accounts == {"Compte courant": 2300, "Livret A": 900}
+    # Le virement n'apparaît ni en revenu ni en dépense.
+    s = tools.monthly_summary("2026-10")
+    assert (s["income"], s["expenses"]) == (2000, 300)
+    assert tools.monthly_summary("2026-10", account=livret["id"])["income"] == 0
+    with pytest.raises(ToolError):
+        tools.transfer("Livret A", "Livret A", 10)
+    with pytest.raises(ToolError):
+        tools.add_transaction(5, "depense", "x", account="Inconnu")
+    with pytest.raises(ToolError):
+        tools.delete_account("Livret A")  # contient des transactions
+    with pytest.raises(ToolError):
+        tools.delete_account(1)
+
+
+def test_auto_categorization(tools, tmp_path):
+    f = tmp_path / "releve.csv"
+    f.write_text("date,montant,description\n"
+                 "2026-10-01,-45.90,CB CARREFOUR MARKET PARIS\n"
+                 "2026-10-02,-12.50,UBER EATS 1234\n"
+                 "2026-10-03,-9.99,PRLV NETFLIX.COM\n"
+                 "2026-10-04,-4.20,BOULANGERIE PAUL\n"
+                 "2026-10-05,-27.00,CHEZ MARCEL\n", encoding="utf-8")
+    r = tools.import_csv(str(f))
+    assert (r["imported"], r["auto_categorized"], r["uncategorized"]) == (5, 4, 1)
+    cats = {t["description"]: t["category"] for t in tools.list_transactions()["transactions"]}
+    assert cats["UBER EATS 1234"] == "restaurants"  # le motif le plus long l'emporte sur « uber »
+    assert cats["PRLV NETFLIX.COM"] == "abonnements"
+
+    pending = tools.list_uncategorized()
+    assert pending["total"] == 1 and "alimentation" in pending["existing_categories"]
+    rule = tools.add_category_rule("Chez Marcel", "restaurants")
+    assert rule["recategorized"] == 1
+    # La règle s'applique aux saisies suivantes.
+    assert tools.add_transaction(30, "depense", description="Chez Marcel")["category"] == "restaurants"
+    # Puis l'historique : un libellé déjà classé à la main est reconnu.
+    t = tools.add_transaction(8, "depense", description="Kiosque Gare")
+    assert t["category"] == "a_categoriser"
+    tools.recategorize_transactions([{"transaction_id": t["id"], "category": "loisirs"}])
+    assert tools.add_transaction(8, "depense", description="Kiosque Gare")["category"] == "loisirs"
+
+
+def test_migration_from_v01(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, "
+                "amount REAL NOT NULL, kind TEXT NOT NULL, category TEXT NOT NULL, description TEXT NOT NULL DEFAULT '')")
+    old.execute("INSERT INTO transactions (date, amount, kind, category) VALUES ('2026-10-01', 10, 'depense', 'x')")
+    old.commit()
+    old.close()
+    t = BudgetTools(connect(path), today=lambda: TODAY)
+    assert t.list_transactions()["transactions"][0]["account"] == "Compte courant"

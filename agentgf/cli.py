@@ -26,10 +26,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default=MODEL)
     parser.add_argument("--effort", default="medium", choices=["low", "medium", "high", "xhigh", "max"])
     parser.add_argument("--verbose", "-v", action="store_true", help="afficher les appels d'outils")
+    parser.add_argument("--web", action="store_true", help="lancer l'interface web (tableau de bord + discussion)")
+    parser.add_argument("--host", default="127.0.0.1", help="adresse d'écoute de l'interface web")
+    parser.add_argument("--port", type=int, default=8000, help="port de l'interface web")
     parser.add_argument("message", nargs="*", help="message unique (sinon mode interactif)")
     args = parser.parse_args(argv)
 
-    agent = BudgetAgent(BudgetTools(connect(args.db)), model=args.model, effort=args.effort)
+    tools = BudgetTools(connect(args.db))
+
+    if args.web:
+        from .web import serve
+
+        serve(tools, lambda: BudgetAgent(tools, model=args.model, effort=args.effort), args.host, args.port)
+        return 0
+
+    agent = BudgetAgent(tools, model=args.model, effort=args.effort)
 
     def on_tool(name, tool_input):
         if args.verbose:

@@ -1,4 +1,4 @@
-"""Outils métier exposés à Claude : transactions, budgets, épargne, projections."""
+"""Outils métier exposés à Claude : comptes, transactions, budgets, épargne, projections."""
 
 from __future__ import annotations
 
@@ -9,6 +9,11 @@ import sqlite3
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable
+
+from .categorize import categorize, normalize
+from .db import DEFAULT_ACCOUNT_ID, TRANSFER_CATEGORY, UNCATEGORIZED
+
+ACCOUNT_TYPES = ["courant", "livret", "epargne", "especes", "autre"]
 
 
 class ToolError(Exception):
@@ -43,28 +48,120 @@ def _r(x: float) -> float:
     return round(x + 0.0, 2)
 
 
+def _parse_amount(raw: str) -> float:
+    return float(raw.replace(" ", "").replace(" ", "").replace("€", "").replace(",", "."))
+
+
 class BudgetTools:
     def __init__(self, conn: sqlite3.Connection, today: Callable[[], date] = date.today):
         self.conn = conn
         self.today = today
 
+    # --- Comptes ------------------------------------------------------------
+
+    def _account_id(self, account: int | str | None) -> int:
+        """Résout un compte par id ou par nom (insensible à la casse). None = compte par défaut."""
+        if account is None or account == "":
+            return DEFAULT_ACCOUNT_ID
+        if isinstance(account, int) or str(account).isdigit():
+            row = self.conn.execute("SELECT id FROM accounts WHERE id = ?", (int(account),)).fetchone()
+        else:
+            row = self.conn.execute("SELECT id FROM accounts WHERE lower(name) = lower(?)",
+                                    (str(account).strip(),)).fetchone()
+        if row is None:
+            names = [r[0] for r in self.conn.execute("SELECT name FROM accounts ORDER BY id")]
+            raise ToolError(f"compte introuvable : '{account}'. Comptes existants : {', '.join(names)}")
+        return row[0]
+
+    def create_account(self, name: str, type: str = "courant", initial_balance: float = 0) -> dict:
+        if type not in ACCOUNT_TYPES:
+            raise ToolError(f"type invalide : choisir parmi {', '.join(ACCOUNT_TYPES)}")
+        try:
+            cur = self.conn.execute("INSERT INTO accounts (name, type, initial_balance) VALUES (?, ?, ?)",
+                                    (name.strip(), type, initial_balance))
+        except sqlite3.IntegrityError:
+            raise ToolError(f"un compte nommé '{name}' existe déjà")
+        self.conn.commit()
+        return self._account_view(cur.lastrowid)
+
+    def _account_view(self, account_id: int) -> dict:
+        row = self.conn.execute(
+            "SELECT a.*, "
+            "COALESCE(SUM(CASE WHEN t.kind = 'revenu' THEN t.amount ELSE -t.amount END), 0) AS movements "
+            "FROM accounts a LEFT JOIN transactions t ON t.account_id = a.id WHERE a.id = ? GROUP BY a.id",
+            (account_id,),
+        ).fetchone()
+        return {"id": row["id"], "name": row["name"], "type": row["type"],
+                "initial_balance": _r(row["initial_balance"]),
+                "balance": _r(row["initial_balance"] + row["movements"])}
+
+    def list_accounts(self) -> dict:
+        accounts = [self._account_view(r[0]) for r in self.conn.execute("SELECT id FROM accounts ORDER BY id")]
+        return {"accounts": accounts, "total_balance": _r(sum(a["balance"] for a in accounts))}
+
+    def update_account(self, account: int | str, name: str | None = None, type: str | None = None,
+                       initial_balance: float | None = None) -> dict:
+        account_id = self._account_id(account)
+        if type is not None and type not in ACCOUNT_TYPES:
+            raise ToolError(f"type invalide : choisir parmi {', '.join(ACCOUNT_TYPES)}")
+        for column, value in (("name", name), ("type", type), ("initial_balance", initial_balance)):
+            if value is not None:
+                try:
+                    self.conn.execute(f"UPDATE accounts SET {column} = ? WHERE id = ?", (value, account_id))
+                except sqlite3.IntegrityError:
+                    raise ToolError(f"un compte nommé '{name}' existe déjà")
+        self.conn.commit()
+        return self._account_view(account_id)
+
+    def delete_account(self, account: int | str) -> dict:
+        account_id = self._account_id(account)
+        if account_id == DEFAULT_ACCOUNT_ID:
+            raise ToolError("le compte par défaut ne peut pas être supprimé")
+        n = self.conn.execute("SELECT COUNT(*) FROM transactions WHERE account_id = ?", (account_id,)).fetchone()[0]
+        if n:
+            raise ToolError(f"ce compte contient {n} transaction(s) : supprimez-les ou déplacez-les d'abord")
+        self.conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+        self.conn.commit()
+        return {"deleted": account_id}
+
+    def transfer(self, from_account: int | str, to_account: int | str, amount: float,
+                 date: str | None = None, description: str = "") -> dict:
+        """Virement interne : n'est compté ni en revenu ni en dépense dans les bilans."""
+        src, dst = self._account_id(from_account), self._account_id(to_account)
+        if src == dst:
+            raise ToolError("les comptes source et destination doivent être différents")
+        if amount <= 0:
+            raise ToolError("le montant doit être strictement positif")
+        d = (_parse_date(date) if date else self.today()).isoformat()
+        names = {r["id"]: r["name"] for r in self.conn.execute("SELECT id, name FROM accounts")}
+        label = description or f"Virement {names[src]} → {names[dst]}"
+        for kind, acc in (("depense", src), ("revenu", dst)):
+            self.conn.execute(
+                "INSERT INTO transactions (date, amount, kind, category, description, account_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)", (d, amount, kind, TRANSFER_CATEGORY, label, acc))
+        self.conn.commit()
+        return {"from": self._account_view(src), "to": self._account_view(dst), "amount": _r(amount), "date": d}
+
     # --- Transactions -------------------------------------------------------
 
-    def add_transaction(self, amount: float, kind: str, category: str,
-                        description: str = "", date: str | None = None) -> dict:
+    def add_transaction(self, amount: float, kind: str, category: str | None = None,
+                        description: str = "", date: str | None = None,
+                        account: int | str | None = None) -> dict:
         if amount <= 0:
             raise ToolError("le montant doit être strictement positif")
         if kind not in ("revenu", "depense"):
             raise ToolError("kind doit valoir 'revenu' ou 'depense'")
         d = _parse_date(date) if date else self.today()
-        category = category.strip().lower()
+        account_id = self._account_id(account)
+        category = category.strip().lower() if category else categorize(self.conn, description)
         cur = self.conn.execute(
-            "INSERT INTO transactions (date, amount, kind, category, description) VALUES (?, ?, ?, ?, ?)",
-            (d.isoformat(), amount, kind, category, description),
+            "INSERT INTO transactions (date, amount, kind, category, description, account_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (d.isoformat(), amount, kind, category, description, account_id),
         )
         self.conn.commit()
         result: dict[str, Any] = {"id": cur.lastrowid, "date": d.isoformat(), "amount": _r(amount),
-                                  "kind": kind, "category": category}
+                                  "kind": kind, "category": category, "account_id": account_id}
         if kind == "depense":
             status = self._category_status(category, d.strftime("%Y-%m"))
             if status:
@@ -73,21 +170,30 @@ class BudgetTools:
 
     def list_transactions(self, start: str | None = None, end: str | None = None,
                           category: str | None = None, kind: str | None = None,
+                          account: int | str | None = None, search: str | None = None,
                           limit: int = 50) -> dict:
-        query, params = "SELECT * FROM transactions WHERE 1=1", []
+        query = ("SELECT t.*, a.name AS account FROM transactions t JOIN accounts a ON a.id = t.account_id "
+                 "WHERE 1=1")
+        params: list[Any] = []
         if start:
-            query += " AND date >= ?"
+            query += " AND t.date >= ?"
             params.append(_parse_date(start, "start").isoformat())
         if end:
-            query += " AND date <= ?"
+            query += " AND t.date <= ?"
             params.append(_parse_date(end, "end").isoformat())
         if category:
-            query += " AND category = ?"
+            query += " AND t.category = ?"
             params.append(category.strip().lower())
         if kind:
-            query += " AND kind = ?"
+            query += " AND t.kind = ?"
             params.append(kind)
-        query += " ORDER BY date DESC, id DESC LIMIT ?"
+        if account not in (None, ""):
+            query += " AND t.account_id = ?"
+            params.append(self._account_id(account))
+        if search:
+            query += " AND lower(t.description) LIKE ?"
+            params.append(f"%{search.lower()}%")
+        query += " ORDER BY t.date DESC, t.id DESC LIMIT ?"
         params.append(max(1, min(limit, 500)))
         rows = [dict(r) for r in self.conn.execute(query, params)]
         return {"count": len(rows), "transactions": rows}
@@ -99,36 +205,104 @@ class BudgetTools:
             raise ToolError(f"aucune transaction avec l'id {transaction_id}")
         return {"deleted": transaction_id}
 
-    def import_csv(self, path: str) -> dict:
-        """CSV avec colonnes : date, montant, categorie, description (montant négatif = dépense)."""
+    def import_csv(self, path: str, account: int | str | None = None) -> dict:
+        """CSV : date, montant (négatif = dépense), categorie (optionnelle), description.
+
+        Les lignes sans catégorie sont classées automatiquement (règles, historique, mots-clés).
+        """
         p = Path(path).expanduser()
         if not p.is_file():
             raise ToolError(f"fichier introuvable : {p}")
-        imported, errors = 0, []
+        account_id = self._account_id(account)
+        imported, auto, pending, errors = 0, 0, 0, []
         with p.open(newline="", encoding="utf-8-sig") as f:
             sample = f.read(2048)
             f.seek(0)
-            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+            except csv.Error:
+                dialect = csv.excel
             for i, row in enumerate(csv.DictReader(f, dialect=dialect), start=2):
                 row = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
                 try:
-                    raw = row.get("montant") or row.get("amount") or ""
-                    value = float(raw.replace(" ", "").replace(" ", "").replace(",", "."))
+                    value = _parse_amount(row.get("montant") or row.get("amount") or "")
                     d = _parse_date(row.get("date", "")).isoformat()
                 except (ValueError, ToolError) as e:
                     errors.append(f"ligne {i} : {e}")
                     continue
                 if value == 0:
                     continue
+                description = row.get("description") or row.get("libelle") or ""
+                category = (row.get("categorie") or row.get("category") or "").lower()
+                if not category:
+                    category = categorize(self.conn, description)
+                    if category == UNCATEGORIZED:
+                        pending += 1
+                    else:
+                        auto += 1
                 self.conn.execute(
-                    "INSERT INTO transactions (date, amount, kind, category, description) VALUES (?, ?, ?, ?, ?)",
-                    (d, abs(value), "revenu" if value > 0 else "depense",
-                     (row.get("categorie") or row.get("category") or "divers").lower(),
-                     row.get("description", "")),
+                    "INSERT INTO transactions (date, amount, kind, category, description, account_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (d, abs(value), "revenu" if value > 0 else "depense", category, description, account_id),
                 )
                 imported += 1
         self.conn.commit()
-        return {"imported": imported, "errors": errors[:20]}
+        return {"imported": imported, "auto_categorized": auto, "uncategorized": pending,
+                "errors": errors[:20]}
+
+    # --- Catégorisation -----------------------------------------------------
+
+    def list_uncategorized(self, limit: int = 100) -> dict:
+        rows = [dict(r) for r in self.conn.execute(
+            "SELECT id, date, amount, kind, description FROM transactions WHERE category = ? "
+            "ORDER BY date DESC LIMIT ?", (UNCATEGORIZED, max(1, min(limit, 500))))]
+        total = self.conn.execute("SELECT COUNT(*) FROM transactions WHERE category = ?",
+                                  (UNCATEGORIZED,)).fetchone()[0]
+        categories = [r[0] for r in self.conn.execute(
+            "SELECT DISTINCT category FROM transactions WHERE category NOT IN (?, ?) ORDER BY category",
+            (UNCATEGORIZED, TRANSFER_CATEGORY))]
+        return {"total": total, "transactions": rows, "existing_categories": categories}
+
+    def recategorize_transactions(self, updates: list[dict]) -> dict:
+        done, missing = 0, []
+        for u in updates:
+            cur = self.conn.execute("UPDATE transactions SET category = ? WHERE id = ?",
+                                    (u["category"].strip().lower(), u["transaction_id"]))
+            if cur.rowcount:
+                done += 1
+            else:
+                missing.append(u["transaction_id"])
+        self.conn.commit()
+        return {"updated": done, "not_found": missing}
+
+    def add_category_rule(self, pattern: str, category: str, apply_to_existing: bool = True) -> dict:
+        """Règle : tout libellé contenant `pattern` est classé dans `category` (prioritaire)."""
+        pattern, category = normalize(pattern), category.strip().lower()
+        if len(pattern) < 3:
+            raise ToolError("le motif doit contenir au moins 3 caractères")
+        self.conn.execute(
+            "INSERT INTO category_rules (pattern, category) VALUES (?, ?) "
+            "ON CONFLICT(pattern) DO UPDATE SET category = excluded.category", (pattern, category))
+        updated = 0
+        if apply_to_existing:
+            rows = self.conn.execute("SELECT id, description FROM transactions WHERE category = ?",
+                                     (UNCATEGORIZED,)).fetchall()
+            ids = [r["id"] for r in rows if pattern in normalize(r["description"])]
+            for tid in ids:
+                self.conn.execute("UPDATE transactions SET category = ? WHERE id = ?", (category, tid))
+            updated = len(ids)
+        self.conn.commit()
+        return {"pattern": pattern, "category": category, "recategorized": updated}
+
+    def list_category_rules(self) -> dict:
+        return {"rules": [dict(r) for r in self.conn.execute("SELECT * FROM category_rules ORDER BY pattern")]}
+
+    def delete_category_rule(self, pattern: str) -> dict:
+        cur = self.conn.execute("DELETE FROM category_rules WHERE pattern = ?", (normalize(pattern),))
+        self.conn.commit()
+        if cur.rowcount == 0:
+            raise ToolError(f"aucune règle pour le motif '{pattern}'")
+        return {"deleted": normalize(pattern)}
 
     # --- Budgets ------------------------------------------------------------
 
@@ -143,6 +317,13 @@ class BudgetTools:
         )
         self.conn.commit()
         return {"category": category, "monthly_limit": _r(monthly_limit)}
+
+    def delete_budget(self, category: str) -> dict:
+        cur = self.conn.execute("DELETE FROM budgets WHERE category = ?", (category.strip().lower(),))
+        self.conn.commit()
+        if cur.rowcount == 0:
+            raise ToolError(f"aucun budget pour la catégorie '{category}'")
+        return {"deleted": category.strip().lower()}
 
     def _spent(self, category: str, first: str, last: str) -> float:
         row = self.conn.execute(
@@ -174,13 +355,16 @@ class BudgetTools:
 
     # --- Analyses -----------------------------------------------------------
 
-    def monthly_summary(self, month: str | None = None) -> dict:
+    def monthly_summary(self, month: str | None = None, account: int | str | None = None) -> dict:
+        """Les virements internes sont exclus : ils ne sont ni des revenus ni des dépenses."""
         month, first, last = _month_bounds(month)
-        rows = self.conn.execute(
-            "SELECT kind, category, SUM(amount) AS total, COUNT(*) AS n FROM transactions "
-            "WHERE date BETWEEN ? AND ? GROUP BY kind, category ORDER BY total DESC",
-            (first, last),
-        ).fetchall()
+        query = ("SELECT kind, category, SUM(amount) AS total, COUNT(*) AS n FROM transactions "
+                 "WHERE date BETWEEN ? AND ? AND category != ?")
+        params: list[Any] = [first, last, TRANSFER_CATEGORY]
+        if account not in (None, ""):
+            query += " AND account_id = ?"
+            params.append(self._account_id(account))
+        rows = self.conn.execute(query + " GROUP BY kind, category ORDER BY total DESC", params).fetchall()
         income = sum(r["total"] for r in rows if r["kind"] == "revenu")
         expenses = sum(r["total"] for r in rows if r["kind"] == "depense")
         return {
@@ -199,14 +383,14 @@ class BudgetTools:
             ],
         }
 
-    def spending_trends(self, months: int = 6) -> dict:
+    def spending_trends(self, months: int = 6, account: int | str | None = None) -> dict:
         """Totaux mensuels de revenus/dépenses sur les N derniers mois (mois courant inclus)."""
         months = max(1, min(months, 36))
         t = self.today()
         series = []
         for back in range(months - 1, -1, -1):
             y, m = divmod(t.year * 12 + t.month - 1 - back, 12)
-            s = self.monthly_summary(f"{y:04d}-{m + 1:02d}")
+            s = self.monthly_summary(f"{y:04d}-{m + 1:02d}", account)
             series.append({k: s[k] for k in ("month", "income", "expenses", "net")})
         active = [s for s in series if s["income"] or s["expenses"]]
         avg = lambda key: _r(sum(s[key] for s in active) / len(active)) if active else 0  # noqa: E731
@@ -331,36 +515,87 @@ def _tool(name: str, description: str, properties: dict, required: list[str]) ->
 _DATE = {"type": "string", "description": "Date au format AAAA-MM-JJ"}
 _MONTH = {"type": "string", "description": "Mois au format AAAA-MM (défaut : mois courant)"}
 _CATEGORY = {"type": "string", "description": "Catégorie en minuscules, ex. alimentation, logement, transport, loisirs, salaire"}
+_ACCOUNT = {"type": "string", "description": "Nom ou id du compte (défaut : compte courant principal)"}
 
 TOOL_SCHEMAS = [
+    # Comptes
+    _tool("create_account", "Crée un compte (courant, livret, épargne, espèces...) avec un solde de départ.",
+          {"name": {"type": "string"}, "type": {"type": "string", "enum": ACCOUNT_TYPES},
+           "initial_balance": {"type": "number", "description": "Solde à la date de création du compte"}},
+          ["name"]),
+    _tool("list_accounts", "Liste les comptes avec leur solde actuel et le solde total.", {}, []),
+    _tool("update_account", "Renomme un compte, change son type ou corrige son solde de départ.",
+          {"account": _ACCOUNT, "name": {"type": "string"},
+           "type": {"type": "string", "enum": ACCOUNT_TYPES}, "initial_balance": {"type": "number"}},
+          ["account"]),
+    _tool("delete_account", "Supprime un compte vide (sans transactions).", {"account": _ACCOUNT}, ["account"]),
+    _tool("transfer",
+          "Virement interne entre deux comptes (ex. du compte courant vers le livret). "
+          "Non compté comme revenu ni dépense.",
+          {"from_account": _ACCOUNT, "to_account": _ACCOUNT, "amount": {"type": "number"},
+           "date": _DATE, "description": {"type": "string"}},
+          ["from_account", "to_account", "amount"]),
+    # Transactions
     _tool("add_transaction",
-          "Enregistre un revenu ou une dépense. Renvoie aussi l'état du budget de la catégorie si un plafond existe.",
+          "Enregistre un revenu ou une dépense. Sans catégorie, elle est déduite du libellé. "
+          "Renvoie l'état du budget de la catégorie si un plafond existe.",
           {"amount": {"type": "number", "description": "Montant positif en euros"},
            "kind": {"type": "string", "enum": ["revenu", "depense"]},
            "category": _CATEGORY,
-           "description": {"type": "string"},
-           "date": {**_DATE, "description": "Date AAAA-MM-JJ (défaut : aujourd'hui)"}},
-          ["amount", "kind", "category"]),
-    _tool("list_transactions", "Liste les transactions, filtrables par période, catégorie et type.",
+           "description": {"type": "string", "description": "Libellé, ex. 'Carrefour Market'"},
+           "date": {**_DATE, "description": "Date AAAA-MM-JJ (défaut : aujourd'hui)"},
+           "account": _ACCOUNT},
+          ["amount", "kind"]),
+    _tool("list_transactions",
+          "Liste les transactions, filtrables par période, catégorie, type, compte et texte du libellé.",
           {"start": _DATE, "end": _DATE, "category": _CATEGORY,
-           "kind": {"type": "string", "enum": ["revenu", "depense"]},
+           "kind": {"type": "string", "enum": ["revenu", "depense"]}, "account": _ACCOUNT,
+           "search": {"type": "string", "description": "Texte recherché dans le libellé"},
            "limit": {"type": "integer", "description": "Nombre max de résultats (défaut 50)"}},
           []),
     _tool("delete_transaction", "Supprime une transaction par son id.",
           {"transaction_id": {"type": "integer"}}, ["transaction_id"]),
     _tool("import_csv",
-          "Importe un relevé CSV local (colonnes date, montant, categorie, description ; montant négatif = dépense).",
-          {"path": {"type": "string", "description": "Chemin du fichier CSV"}}, ["path"]),
+          "Importe un relevé CSV local (colonnes date, montant, description, categorie optionnelle ; "
+          "montant négatif = dépense). Les lignes sans catégorie sont classées automatiquement.",
+          {"path": {"type": "string", "description": "Chemin du fichier CSV"}, "account": _ACCOUNT},
+          ["path"]),
+    # Catégorisation
+    _tool("list_uncategorized",
+          "Liste les transactions restées 'a_categoriser' et les catégories déjà utilisées.",
+          {"limit": {"type": "integer"}}, []),
+    _tool("recategorize_transactions", "Change la catégorie de plusieurs transactions en une fois.",
+          {"updates": {"type": "array", "items": {
+              "type": "object",
+              "properties": {"transaction_id": {"type": "integer"}, "category": _CATEGORY},
+              "required": ["transaction_id", "category"], "additionalProperties": False}}},
+          ["updates"]),
+    _tool("add_category_rule",
+          "Mémorise une règle : tout libellé contenant le motif ira dans la catégorie (imports futurs inclus).",
+          {"pattern": {"type": "string", "description": "Mot ou enseigne, ex. 'boulangerie paul'"},
+           "category": _CATEGORY,
+           "apply_to_existing": {"type": "boolean",
+                                 "description": "Reclasser aussi les transactions 'a_categoriser' (défaut : oui)"}},
+          ["pattern", "category"]),
+    _tool("list_category_rules", "Liste les règles de catégorisation de l'utilisateur.", {}, []),
+    _tool("delete_category_rule", "Supprime une règle de catégorisation.",
+          {"pattern": {"type": "string"}}, ["pattern"]),
+    # Budgets
     _tool("set_budget", "Crée ou met à jour le plafond mensuel d'une catégorie de dépenses.",
           {"category": _CATEGORY, "monthly_limit": {"type": "number", "description": "Plafond mensuel en euros"}},
           ["category", "monthly_limit"]),
+    _tool("delete_budget", "Supprime le plafond d'une catégorie.", {"category": _CATEGORY}, ["category"]),
     _tool("get_budget_status", "État de chaque budget (dépensé, restant, % utilisé, dépassement) pour un mois.",
           {"month": _MONTH}, []),
+    # Analyses
     _tool("monthly_summary",
-          "Bilan d'un mois : revenus, dépenses, solde, taux d'épargne et répartition par catégorie.",
-          {"month": _MONTH}, []),
+          "Bilan d'un mois : revenus, dépenses, solde, taux d'épargne et répartition par catégorie "
+          "(tous comptes, ou un seul).",
+          {"month": _MONTH, "account": _ACCOUNT}, []),
     _tool("spending_trends", "Évolution mensuelle des revenus et dépenses sur les N derniers mois, avec moyennes.",
-          {"months": {"type": "integer", "description": "Nombre de mois (défaut 6, max 36)"}}, []),
+          {"months": {"type": "integer", "description": "Nombre de mois (défaut 6, max 36)"}, "account": _ACCOUNT},
+          []),
+    # Épargne
     _tool("create_savings_goal",
           "Crée un objectif d'épargne. Avec une échéance, calcule l'effort mensuel nécessaire.",
           {"name": {"type": "string"}, "target": {"type": "number", "description": "Montant cible en euros"},
