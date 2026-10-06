@@ -29,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--web", action="store_true", help="lancer l'interface web (tableau de bord + discussion)")
     parser.add_argument("--host", default="127.0.0.1", help="adresse d'écoute de l'interface web")
     parser.add_argument("--port", type=int, default=8000, help="port de l'interface web")
+    parser.add_argument("--no-browser", action="store_true", help="ne pas ouvrir le navigateur au lancement")
     parser.add_argument("message", nargs="*", help="message unique (sinon mode interactif)")
     args = parser.parse_args(argv)
 
@@ -37,7 +38,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.web:
         from .web import serve
 
-        serve(tools, lambda: BudgetAgent(tools, model=args.model, effort=args.effort), args.host, args.port)
+        serve(tools, lambda: BudgetAgent(tools, model=args.model, effort=args.effort), args.host, args.port,
+              open_browser=not args.no_browser)
         return 0
 
     agent = BudgetAgent(tools, model=args.model, effort=args.effort)

@@ -52,6 +52,8 @@ class ParsedCSV:
 
 
 def decode(data: bytes) -> str:
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return data.decode("utf-16")
     for encoding in ("utf-8-sig", "cp1252"):
         try:
             return data.decode(encoding)
@@ -113,7 +115,10 @@ def parse(text: str) -> ParsedCSV:
     if not any(line.strip() for line in lines):
         raise CSVFormatError("le fichier est vide")
     delimiter = _sniff_delimiter(lines)
-    table = list(csv.reader(io.StringIO("\n".join(lines)), delimiter=delimiter))
+    try:
+        table = list(csv.reader(io.StringIO("\n".join(lines).replace("\x00", "")), delimiter=delimiter))
+    except csv.Error as e:
+        raise CSVFormatError(f"fichier CSV illisible : {e}")
 
     # La ligne d'en-tête est la première qui contient une colonne de date et une colonne de montant.
     for header_index, row in enumerate(table[:40]):

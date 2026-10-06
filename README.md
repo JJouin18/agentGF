@@ -50,6 +50,11 @@ vous › Si je place 150 € par mois à 3 % pendant 10 ans, j'aurai combien ?
 6 mois, dépenses par catégorie, jauges de budgets et d'objectifs, comptes et dernières transactions,
 avec le chat de l'assistant à côté. Filtres par mois et par compte, import CSV par bouton, thème clair/sombre.
 
+Le navigateur s'ouvre automatiquement (`--no-browser` pour l'éviter). **Laissez le terminal ouvert**
+pendant l'utilisation, et n'ouvrez pas `index.html` en double-cliquant dessus : la page a besoin du
+serveur pour fonctionner. En cas de souci, le message d'erreur s'affiche en haut du tableau de bord et
+le détail technique dans le terminal.
+
 Le serveur n'a pas d'authentification : il écoute sur `127.0.0.1` uniquement et refuse les requêtes
 d'autres origines. N'utilisez `--host 0.0.0.0` que sur un réseau de confiance.
 

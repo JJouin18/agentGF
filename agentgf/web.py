@@ -7,8 +7,11 @@ sur 127.0.0.1 uniquement : il n'a pas d'authentification et expose vos données 
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import threading
+import traceback
+import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -109,7 +112,25 @@ def make_handler(app: App, local_only: bool = True):
                 raise ToolError("fichier trop volumineux (5 Mo max)")
             return self.rfile.read(length)
 
+        def _internal_error(self, e: Exception) -> None:
+            # Toujours une réponse JSON lisible, et le détail dans le terminal du serveur.
+            traceback.print_exc(file=sys.stderr)
+            self._error(f"erreur interne du serveur ({type(e).__name__} : {e}). "
+                        "Le détail est affiché dans le terminal où tourne agentgf.", HTTPStatus.INTERNAL_SERVER_ERROR)
+
         def do_GET(self):
+            try:
+                self._get()
+            except Exception as e:  # noqa: BLE001
+                self._internal_error(e)
+
+        def do_POST(self):
+            try:
+                self._post()
+            except Exception as e:  # noqa: BLE001
+                self._internal_error(e)
+
+        def _get(self):
             if not self._host_allowed():
                 return
             url = urlparse(self.path)
@@ -124,7 +145,7 @@ def make_handler(app: App, local_only: bool = True):
             else:
                 self._error("introuvable", HTTPStatus.NOT_FOUND)
 
-        def do_POST(self):
+        def _post(self):
             if not self._host_allowed():
                 return
             url = urlparse(self.path)
@@ -167,10 +188,18 @@ def make_handler(app: App, local_only: bool = True):
     return Handler
 
 
-def serve(tools: BudgetTools, agent_factory, host: str = "127.0.0.1", port: int = 8000) -> None:
+def serve(tools: BudgetTools, agent_factory, host: str = "127.0.0.1", port: int = 8000,
+          open_browser: bool = True) -> None:
     app = App(tools, agent_factory)
-    server = ThreadingHTTPServer((host, port), make_handler(app, local_only=host in LOOPBACK_HOSTS))
-    print(f"AgentGF — interface web sur http://{host}:{port}  (Ctrl+C pour arrêter)")
+    try:
+        server = ThreadingHTTPServer((host, port), make_handler(app, local_only=host in LOOPBACK_HOSTS))
+    except OSError as e:
+        sys.exit(f"Impossible de démarrer sur le port {port} ({e}). Essayez par ex. : agentgf --web --port 8001")
+    url = f"http://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{port}"
+    print(f"AgentGF — interface web sur {url}")
+    print("Laissez ce terminal ouvert pendant l'utilisation (Ctrl+C pour arrêter).")
+    if open_browser:
+        threading.Timer(0.5, webbrowser.open, args=(url,)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

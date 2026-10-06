@@ -68,3 +68,11 @@ def test_rejects_foreign_origin_and_host(server):
     assert status == 403
     status, _ = call(server + "/api/dashboard", headers={"Host": "evil.example"})
     assert status == 403
+
+
+def test_unexpected_error_returns_json(server, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("panne simulée")
+    monkeypatch.setattr(BudgetTools, "monthly_summary", boom)
+    status, body = call(server + "/api/dashboard")
+    assert status == 500 and "panne simulée" in json.loads(body)["error"]

@@ -108,3 +108,9 @@ def test_import_dedupes_and_dry_run(tmp_path):
     with pytest.raises(ToolError):
         f.write_text("a;b\n1;2\n", encoding="utf-8")
         tools.import_csv(str(f))
+
+
+def test_utf16_export():
+    text = "Date;Libellé;Montant\n01/10/2026;CB LIDL;-12,00\n"
+    row = csv_import.parse(csv_import.decode(text.encode("utf-16"))).rows[0]
+    assert (row.date, row.amount, row.description) == ("2026-10-01", -12.0, "CB LIDL")
