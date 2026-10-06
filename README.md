@@ -58,10 +58,23 @@ d'autres origines. N'utilisez `--host 0.0.0.0` que sur un réseau de confiance.
 « Crée un Livret A avec 2000 € », « vire 200 € du compte courant vers le Livret A ».
 Les virements internes ne comptent ni comme revenus ni comme dépenses dans les bilans.
 
-### Import CSV et catégorisation automatique
+### Importer un relevé bancaire (CSV)
 
-Colonnes attendues (séparateur `,` `;` ou tabulation, décimales `,` ou `.`) : `date` (AAAA-MM-JJ),
-`montant` (négatif = dépense), `description` (ou `libelle`), `categorie` (optionnelle).
+1. Dans l'espace en ligne de votre banque, exportez vos opérations au format **CSV** (parfois appelé
+   « Excel » ou « tableur »).
+2. Dans l'interface web, cliquez sur **Importer un relevé** ou glissez le fichier n'importe où sur la page.
+3. Choisissez le compte de destination, vérifiez l'aperçu, puis validez.
+
+![Import d'un relevé](docs/import-releve.png)
+
+Les colonnes sont détectées automatiquement, quelle que soit la banque : lignes d'information avant le
+tableau, encodage UTF-8 ou Windows, séparateur `;` `,` ou tabulation, dates `JJ/MM/AAAA` ou ISO,
+montant signé ou colonnes **Débit / Crédit**, montants `1 234,56 €`. Testé sur des exports au format
+Crédit Agricole, BNP Paribas, Société Générale, Boursorama et Revolut.
+
+Vous pouvez réimporter un relevé qui chevauche le précédent : les transactions déjà présentes sur le
+compte sont reconnues et ignorées. En terminal, demandez simplement à l'agent
+« importe ~/Téléchargements/releve.csv sur le Livret A ».
 
 Les lignes sans catégorie sont classées automatiquement, dans cet ordre :
 1. vos règles (« classe toujours *Chez Marcel* en restaurants ») ;
@@ -76,6 +89,7 @@ Ce qui reste « à catégoriser » est classé par l'assistant, qui peut créer 
 agentgf/
 ├── agent.py       # boucle agentique Claude (tool use, thinking adaptatif, fallback sur refus)
 ├── tools.py       # outils métier + schémas JSON stricts exposés au modèle
+├── csv_import.py  # lecture des relevés CSV des banques
 ├── categorize.py  # catégorisation automatique des libellés
 ├── db.py          # schéma SQLite (+ migration des bases 0.1)
 ├── web.py         # serveur web local (bibliothèque standard)

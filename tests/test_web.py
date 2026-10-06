@@ -56,7 +56,10 @@ def test_chat_and_import(server):
     csv = "date;montant;description\n2026-10-01;-20,5;CB AUCHAN\n2026-10-02;-7;XYZ\n".encode()
     status, body = call(server + "/api/import", csv, {"Content-Type": "text/csv"})
     assert status == 200
-    assert json.loads(body) == {"imported": 2, "auto_categorized": 1, "uncategorized": 1, "errors": []}
+    r = json.loads(body)
+    assert (r["imported"], r["auto_categorized"], r["uncategorized"], r["errors"]) == (2, 1, 1, [])
+    preview = json.loads(call(server + "/api/import?preview=1", csv, {"Content-Type": "text/csv"})[1])
+    assert (preview["dry_run"], preview["imported"], preview["duplicates"]) == (True, 0, 2)
     assert json.loads(call(server + "/api/dashboard")[1])["uncategorized"] == 1
 
 

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import calendar
-import csv
 import json
 import sqlite3
+from collections import Counter
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable
+
+from . import csv_import
 
 from .categorize import categorize, normalize
 from .db import DEFAULT_ACCOUNT_ID, TRANSFER_CATEGORY, UNCATEGORIZED
@@ -46,10 +48,6 @@ def _months_until(deadline: date, today: date) -> int:
 
 def _r(x: float) -> float:
     return round(x + 0.0, 2)
-
-
-def _parse_amount(raw: str) -> float:
-    return float(raw.replace(" ", "").replace(" ", "").replace("€", "").replace(",", "."))
 
 
 class BudgetTools:
@@ -205,50 +203,67 @@ class BudgetTools:
             raise ToolError(f"aucune transaction avec l'id {transaction_id}")
         return {"deleted": transaction_id}
 
-    def import_csv(self, path: str, account: int | str | None = None) -> dict:
-        """CSV : date, montant (négatif = dépense), categorie (optionnelle), description.
+    def import_csv(self, path: str, account: int | str | None = None, dry_run: bool = False) -> dict:
+        """Importe un relevé CSV bancaire (formats des principales banques reconnus automatiquement).
 
         Les lignes sans catégorie sont classées automatiquement (règles, historique, mots-clés).
+        Les transactions déjà présentes sur le compte sont ignorées : réimporter un relevé qui
+        chevauche le précédent ne crée pas de doublons. Avec dry_run, rien n'est enregistré.
         """
         p = Path(path).expanduser()
         if not p.is_file():
             raise ToolError(f"fichier introuvable : {p}")
         account_id = self._account_id(account)
-        imported, auto, pending, errors = 0, 0, 0, []
-        with p.open(newline="", encoding="utf-8-sig") as f:
-            sample = f.read(2048)
-            f.seek(0)
-            try:
-                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
-            except csv.Error:
-                dialect = csv.excel
-            for i, row in enumerate(csv.DictReader(f, dialect=dialect), start=2):
-                row = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
-                try:
-                    value = _parse_amount(row.get("montant") or row.get("amount") or "")
-                    d = _parse_date(row.get("date", "")).isoformat()
-                except (ValueError, ToolError) as e:
-                    errors.append(f"ligne {i} : {e}")
-                    continue
-                if value == 0:
-                    continue
-                description = row.get("description") or row.get("libelle") or ""
-                category = (row.get("categorie") or row.get("category") or "").lower()
-                if not category:
-                    category = categorize(self.conn, description)
-                    if category == UNCATEGORIZED:
-                        pending += 1
-                    else:
-                        auto += 1
+        try:
+            parsed = csv_import.parse(csv_import.decode(p.read_bytes()))
+        except csv_import.CSVFormatError as e:
+            raise ToolError(str(e))
+
+        # Anti-doublons par multiensemble : deux cafés identiques le même jour restent deux lignes,
+        # mais une ligne déjà en base n'est pas réimportée.
+        existing: Counter = Counter(
+            (r["date"], round(r["amount"], 2), r["kind"], normalize(r["description"]))
+            for r in self.conn.execute(
+                "SELECT date, amount, kind, description FROM transactions WHERE account_id = ?", (account_id,)))
+        imported, duplicates, auto, pending, sample = 0, 0, 0, 0, []
+        for row in parsed.rows:
+            kind = "revenu" if row.amount > 0 else "depense"
+            key = (row.date, abs(row.amount), kind, normalize(row.description))
+            if existing[key] > 0:
+                existing[key] -= 1
+                duplicates += 1
+                continue
+            category = row.category
+            if not category:
+                category = categorize(self.conn, row.description)
+                if category == UNCATEGORIZED:
+                    pending += 1
+                else:
+                    auto += 1
+            if len(sample) < 8:
+                sample.append({"date": row.date, "amount": row.amount, "description": row.description,
+                               "category": category})
+            if not dry_run:
                 self.conn.execute(
                     "INSERT INTO transactions (date, amount, kind, category, description, account_id) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
-                    (d, abs(value), "revenu" if value > 0 else "depense", category, description, account_id),
+                    (row.date, abs(row.amount), kind, category, row.description, account_id),
                 )
-                imported += 1
-        self.conn.commit()
-        return {"imported": imported, "auto_categorized": auto, "uncategorized": pending,
-                "errors": errors[:20]}
+            imported += 1
+        if not dry_run:
+            self.conn.commit()
+        dates = [r.date for r in parsed.rows]
+        return {
+            "dry_run": dry_run,
+            "imported": imported,
+            "duplicates": duplicates,
+            "auto_categorized": auto,
+            "uncategorized": pending,
+            "period": {"start": min(dates), "end": max(dates)} if dates else None,
+            "columns": parsed.columns,
+            "sample": sample,
+            "errors": parsed.errors[:20],
+        }
 
     # --- Catégorisation -----------------------------------------------------
 
@@ -556,9 +571,11 @@ TOOL_SCHEMAS = [
     _tool("delete_transaction", "Supprime une transaction par son id.",
           {"transaction_id": {"type": "integer"}}, ["transaction_id"]),
     _tool("import_csv",
-          "Importe un relevé CSV local (colonnes date, montant, description, categorie optionnelle ; "
-          "montant négatif = dépense). Les lignes sans catégorie sont classées automatiquement.",
-          {"path": {"type": "string", "description": "Chemin du fichier CSV"}, "account": _ACCOUNT},
+          "Importe un relevé CSV exporté par une banque (colonnes détectées automatiquement : date, "
+          "montant ou débit/crédit, libellé, catégorie). Ignore les transactions déjà importées et "
+          "classe automatiquement les lignes sans catégorie. dry_run=true pour un aperçu sans enregistrer.",
+          {"path": {"type": "string", "description": "Chemin du fichier CSV"}, "account": _ACCOUNT,
+           "dry_run": {"type": "boolean"}},
           ["path"]),
     # Catégorisation
     _tool("list_uncategorized",

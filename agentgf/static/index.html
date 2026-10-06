@@ -124,6 +124,35 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .suggestions button { font-size: 12px; padding: 4px 9px; border-radius: 999px; }
 form.composer { display: flex; gap: 8px; padding: 12px 18px 16px; border-top: 1px solid var(--border); }
 form.composer textarea { flex: 1; resize: none; height: 44px; }
+dialog {
+  width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 0;
+  border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: var(--ink);
+}
+dialog::backdrop { background: rgba(0,0,0,.45); }
+.dlg-head { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px 0; }
+.dlg-head h2 { margin: 0; font-size: 17px; }
+.dlg-body { padding: 14px 20px; display: grid; gap: 14px; }
+.dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 0 20px 18px; flex-wrap: wrap; }
+.drop {
+  border: 2px dashed var(--axis); border-radius: 12px; padding: 26px 16px; text-align: center;
+  color: var(--ink-2); cursor: pointer;
+}
+.drop:hover, .drop.over { border-color: var(--accent); background: var(--wash); }
+.drop b { color: var(--ink); }
+.drop small { display: block; margin-top: 6px; color: var(--muted); }
+.field { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 14px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+.stats div { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
+.stats b { display: block; font-size: 20px; font-weight: 600; }
+.stats span { font-size: 12px; color: var(--ink-2); }
+.cols { font-size: 13px; color: var(--ink-2); }
+.cols code { background: var(--wash); border-radius: 4px; padding: 1px 5px; color: var(--ink); }
+.errors { font-size: 13px; color: var(--bad-ink); margin: 0; padding-left: 18px; }
+.drag-veil {
+  position: fixed; inset: 0; z-index: 20; display: none; place-items: center;
+  background: rgba(42,120,214,.12); border: 3px dashed var(--accent); font-size: 18px; font-weight: 600;
+}
+.drag-veil.on { display: grid; }
 #tooltip {
   position: fixed; pointer-events: none; z-index: 10; display: none;
   background: var(--surface); color: var(--ink); border: 1px solid var(--border);
@@ -150,7 +179,7 @@ form.composer textarea { flex: 1; resize: none; height: 44px; }
   <div class="filters">
     <input type="month" id="month" aria-label="Mois">
     <select id="account" aria-label="Compte"><option value="">Tous les comptes</option></select>
-    <button id="importBtn" type="button">Importer un CSV</button>
+    <button id="importBtn" type="button">Importer un relevé</button>
     <input type="file" id="file" accept=".csv,text/csv" hidden>
     <button id="themeBtn" type="button" aria-label="Changer de thème">◐</button>
   </div>
@@ -222,6 +251,25 @@ form.composer textarea { flex: 1; resize: none; height: 44px; }
   </aside>
 </div>
 <div id="tooltip" role="status"></div>
+<div class="drag-veil" id="dragVeil">Déposez votre relevé CSV ici</div>
+
+<dialog id="importDlg" aria-labelledby="importTitle">
+  <div class="dlg-head"><h2 id="importTitle">Importer un relevé bancaire</h2>
+    <button type="button" id="importClose" aria-label="Fermer">✕</button></div>
+  <div class="dlg-body">
+    <div class="drop" id="drop" tabindex="0" role="button">
+      <b id="dropLabel">Choisir un fichier CSV</b> ou le glisser ici
+      <small>Export CSV de votre banque (Crédit Agricole, BNP, Société Générale, LCL, Boursorama, Banque Postale,
+        Revolut…). Les colonnes sont détectées automatiquement.</small>
+    </div>
+    <label class="field">Compte de destination <select id="importAccount"></select></label>
+    <div id="preview"></div>
+  </div>
+  <div class="dlg-foot">
+    <button type="button" id="importCancel">Annuler</button>
+    <button type="button" class="primary" id="importConfirm" disabled>Importer</button>
+  </div>
+</dialog>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -502,20 +550,103 @@ $("resetBtn").onclick = async () => {
 };
 
 // --- Import CSV -----------------------------------------------------------------
-$("importBtn").onclick = () => $("file").click();
-$("file").onchange = async () => {
-  const f = $("file").files[0]; if (!f) return;
-  const p = new URLSearchParams(); if ($("account").value) p.set("account", $("account").value);
-  const r = await fetch("/api/import?" + p, { method: "POST", headers: { "Content-Type": "text/csv" }, body: await f.arrayBuffer() });
-  const d = await r.json();
-  $("file").value = "";
-  if (!r.ok) { addMsg("err", d.error); return; }
-  let msg = `**Import de ${f.name}** : ${d.imported} transaction(s), dont ${d.auto_categorized} classée(s) automatiquement.`;
-  if (d.uncategorized) msg += ` ${d.uncategorized} restent à catégoriser.`;
-  if (d.errors.length) msg += `\n- ` + d.errors.join("\n- ");
+const imp = { file: null, bytes: null, preview: null };
+const dlg = $("importDlg");
+
+function openImport(file) {
+  const accounts = state.data?.accounts.accounts || [];
+  const sel = $("importAccount");
+  sel.innerHTML = accounts.map((a) => `<option value="${a.id}">${esc(a.name)}</option>`).join("");
+  sel.value = $("account").value || (accounts[0] && accounts[0].id) || "";
+  imp.file = imp.bytes = imp.preview = null;
+  $("preview").innerHTML = ""; $("dropLabel").textContent = "Choisir un fichier CSV";
+  $("importConfirm").disabled = true; $("importConfirm").textContent = "Importer";
+  if (!dlg.open) dlg.showModal();
+  if (file) loadFile(file);
+}
+const closeImport = () => dlg.close();
+
+async function loadFile(file) {
+  if (!/\.(csv|txt)$/i.test(file.name) && file.type && !file.type.includes("csv") && !file.type.startsWith("text/")) {
+    $("preview").innerHTML = `<p class="errors">« ${esc(file.name)} » n'est pas un fichier CSV.</p>`; return;
+  }
+  imp.file = file; imp.bytes = await file.arrayBuffer();
+  $("dropLabel").textContent = file.name;
+  runPreview();
+}
+
+async function postImport(preview) {
+  const p = new URLSearchParams({ account: $("importAccount").value });
+  if (preview) p.set("preview", "1");
+  const r = await fetch("/api/import?" + p, { method: "POST", headers: { "Content-Type": "text/csv" }, body: imp.bytes });
+  return [r.ok, await r.json()];
+}
+
+async function runPreview() {
+  if (!imp.bytes) return;
+  $("importConfirm").disabled = true;
+  $("preview").innerHTML = '<p class="typing">Analyse du fichier…</p>';
+  const [ok, d] = await postImport(true);
+  if (!ok) { $("preview").innerHTML = `<p class="errors">${esc(d.error)}</p>`; return; }
+  imp.preview = d;
+  const c = d.columns, col = (label, v) => (v ? `${label} <code>${esc(v)}</code>` : "");
+  const fmtDate = (x) => new Date(x).toLocaleDateString("fr-FR");
+  $("preview").innerHTML = `
+    <div class="stats">
+      <div><b>${d.imported}</b><span>nouvelle(s) transaction(s)</span></div>
+      <div><b>${d.duplicates}</b><span>déjà importée(s), ignorée(s)</span></div>
+      <div><b>${d.auto_categorized}</b><span>classée(s) automatiquement</span></div>
+      <div><b>${d.uncategorized}</b><span>à catégoriser</span></div>
+    </div>
+    ${d.period ? `<div class="cols">Période : du ${fmtDate(d.period.start)} au ${fmtDate(d.period.end)}</div>` : ""}
+    <div class="cols">Colonnes reconnues : ${[col("date", c.date), col("montant", c.montant), col("débit", c.debit),
+      col("crédit", c.credit), col("libellé", c.libelle), col("catégorie", c.categorie)].filter(Boolean).join(" · ")}</div>
+    ${d.errors.length ? `<ul class="errors">${d.errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : ""}
+    ${d.sample.length ? `<details open><summary>Aperçu</summary>${table(["Libellé", "Date", "Catégorie", "Montant"],
+      d.sample.map((t) => [esc(t.description || "—"), fmtDate(t.date), esc(catLabel(t.category)),
+        `<span class="${t.amount > 0 ? "pos" : ""}">${t.amount > 0 ? "+" : "−"}${eur.format(Math.abs(t.amount))}</span>`]))}</details>` : ""}`;
+  $("importConfirm").disabled = d.imported === 0;
+  $("importConfirm").textContent = d.imported ? `Importer ${d.imported} transaction(s)` : "Rien de nouveau à importer";
+}
+
+$("importConfirm").onclick = async () => {
+  $("importConfirm").disabled = true; $("importConfirm").textContent = "Import en cours…";
+  const [ok, d] = await postImport(false);
+  if (!ok) { $("preview").insertAdjacentHTML("afterbegin", `<p class="errors">${esc(d.error)}</p>`); runPreview(); return; }
+  closeImport();
+  const account = $("importAccount").selectedOptions[0]?.textContent || "";
+  let msg = `**Import de ${imp.file.name}** sur ${account} : ${d.imported} transaction(s) ajoutée(s), dont ${d.auto_categorized} classée(s) automatiquement.`;
+  if (d.duplicates) msg += ` ${d.duplicates} déjà présente(s) ont été ignorée(s).`;
+  if (d.uncategorized) msg += ` ${d.uncategorized} reste(nt) à catégoriser : utilisez le bouton en haut du tableau de bord.`;
   addMsg("bot", msg);
+  // Affiche le dernier mois du relevé pour voir tout de suite les données importées.
+  if (d.period) $("month").value = d.period.end.slice(0, 7);
   refresh();
 };
+
+$("importBtn").onclick = () => openImport();
+$("importClose").onclick = $("importCancel").onclick = closeImport;
+$("importAccount").onchange = runPreview;
+$("drop").onclick = () => $("file").click();
+$("drop").onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("file").click(); } };
+$("file").onchange = () => { const f = $("file").files[0]; $("file").value = ""; if (f) loadFile(f); };
+$("drop").addEventListener("dragover", (e) => { e.preventDefault(); $("drop").classList.add("over"); });
+$("drop").addEventListener("dragleave", () => $("drop").classList.remove("over"));
+$("drop").addEventListener("drop", (e) => {
+  e.preventDefault(); e.stopPropagation(); $("drop").classList.remove("over");
+  const f = e.dataTransfer.files[0]; if (f) loadFile(f);
+});
+// Glisser un fichier n'importe où sur la page ouvre directement l'import.
+let dragDepth = 0;
+const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+addEventListener("dragenter", (e) => { if (hasFiles(e) && !dlg.open) { dragDepth++; $("dragVeil").classList.add("on"); } });
+addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; $("dragVeil").classList.remove("on"); } });
+addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+addEventListener("drop", (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault(); dragDepth = 0; $("dragVeil").classList.remove("on");
+  const f = e.dataTransfer.files[0]; if (f) openImport(f);
+});
 
 $("month").value = new Date().toISOString().slice(0, 7);
 $("month").onchange = refresh;

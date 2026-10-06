@@ -58,13 +58,13 @@ class App:
             self.agent = None
         return {"ok": True}
 
-    def import_csv(self, content: bytes, account: str | None) -> dict:
+    def import_csv(self, content: bytes, account: str | None, dry_run: bool = False) -> dict:
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
             f.write(content)
             path = f.name
         try:
             with self.lock:
-                return self.tools.import_csv(path, account or None)
+                return self.tools.import_csv(path, account or None, dry_run=dry_run)
         finally:
             Path(path).unlink(missing_ok=True)
 
@@ -143,7 +143,8 @@ def make_handler(app: App, local_only: bool = True):
                 elif url.path == "/api/chat/reset":
                     self._json(app.reset())
                 elif url.path == "/api/import":
-                    self._json(app.import_csv(self._body(), q.get("account")))
+                    # ?preview=1 : analyse le fichier et renvoie un aperçu sans rien enregistrer.
+                    self._json(app.import_csv(self._body(), q.get("account"), dry_run=q.get("preview") == "1"))
                 else:
                     self._error("introuvable", HTTPStatus.NOT_FOUND)
             except ToolError as e:
